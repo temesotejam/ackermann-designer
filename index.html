@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Central Lever Ackermann Designer (Manual)</title>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; }
+        .canvas-container { 
+            position: relative; 
+            width: 100%; 
+            aspect-ratio: 16/9; 
+            background: white; 
+            border-radius: 0.5rem; 
+            overflow: hidden; 
+            border: 1px solid #e2e8f0; 
+            touch-action: none; 
+        }
+        input[type=range] { accent-color: #2563eb; }
+        .spec-card { background: #f8fafc; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid #e2e8f0; }
+        .spec-label { font-size: 0.75rem; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+        .spec-value { font-size: 1.25rem; font-weight: 700; color: #0f172a; font-variant-numeric: tabular-nums; }
+        .spec-unit { font-size: 0.875rem; color: #94a3b8; margin-left: 0.125rem; font-weight: 500; }
+        .interactive-hint { position: absolute; top: 10px; left: 10px; background: rgba(255,255,255,0.9); padding: 5px 10px; border-radius: 4px; font-size: 0.75rem; color: #64748b; pointer-events: none; border: 1px solid #cbd5e1; z-index: 10; }
+        .view-controls { position: absolute; top: 10px; right: 10px; display: flex; gap: 8px; z-index: 10; }
+        .control-btn { background: white; border: 1px solid #cbd5e1; border-radius: 4px; padding: 4px 8px; font-size: 0.75rem; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.05); color: #475569; font-weight: 600; transition: all 0.2s; }
+        .control-btn:hover { background: #f8fafc; color: #2563eb; }
+        .control-btn.active { background: #eff6ff; border-color: #3b82f6; color: #2563eb; }
+        .opt-input { font-size: 0.75rem; padding: 2px 4px; border: 1px solid #cbd5e1; border-radius: 4px; width: 100%; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel">
+
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+    // --- 数学ユーティリティ ---
+    const toRad = (deg) => deg * Math.PI / 180;
+    const toDeg = (rad) => rad * 180 / Math.PI;
+    const distSq = (p1, p2) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
+
+    const getIntersection = (p1, r1, p2, r2, selectSign = 1) => {
+        const d2 = (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
+        const d = Math.sqrt(d2);
+        if (d > r1 + r2 || d < Math.abs(r1 - r2) || d === 0) return null;
+        const a = (r1**2 - r2**2 + d2) / (2 * d);
+        const h = Math.sqrt(Math.max(0, r1**2 - a**2));
+        const x2 = p1.x + a * (p2.x - p1.x) / d;
+        const y2 = p1.y + a * (p2.y - p1.y) / d;
+        const rx = -h * (p2.y - p1.y) / d;
+        const ry = h * (p2.x - p1.x) / d;
+        return { x: x2 + selectSign * rx, y: y2 + selectSign * ry };
+    };
+
+    const calcIdealOuter = (innerRad, wb, tread) => {
+        if (Math.abs(innerRad) < 1e-5) return 0;
+        const cotInner = 1.0 / Math.tan(innerRad);
+        const cotOuter = cotInner + (tread / wb);
+        return Math.atan(1.0 / cotOuter);
+    };
+
+    // --- リンク機構計算ロジック ---
+    const computeLinkage = (inputAngleDeg, turnLeft, params) => {
+        const { wb, tread, alphaDeg, armLen, leverLen, leverY, leverSpreadDeg } = params;
+        const alpha = toRad(alphaDeg);
+        const spread = toRad(leverSpreadDeg);
+        const inputRad = toRad(inputAngleDeg);
+        const leverDir = -1;
+
+        const knL_init = { x: -tread/2 + armLen * Math.sin(alpha), y: -armLen * Math.cos(alpha) };
+        const knR_init = { x: tread/2 - armLen * Math.sin(alpha), y: -armLen * Math.cos(alpha) };
+        const levL_init = { x: leverLen * Math.sin(-spread), y: leverY + leverLen * Math.cos(-spread) * leverDir };
+        const levR_init = { x: leverLen * Math.sin(spread), y: leverY + leverLen * Math.cos(spread) * leverDir };
+        const tieRodLen = Math.sqrt((knL_init.x - levL_init.x)**2 + (knL_init.y - levL_init.y)**2);
+
+        let P_in, D_in_target;
+        const originIn = turnLeft ? {x: -tread/2, y:0} : {x: tread/2, y:0};
+        if(turnLeft) {
+            const ang = alpha + inputRad;
+            P_in = { x: originIn.x + armLen * Math.sin(ang), y: originIn.y - armLen * Math.cos(ang) };
+            D_in_target = levL_init;
+        } else {
+            const ang = alpha + inputRad;
+            P_in = { x: originIn.x - armLen * Math.sin(ang), y: originIn.y - armLen * Math.cos(ang) };
+            D_in_target = levR_init;
+        }
+
+        const G = {x: 0, y: leverY};
+        const cand1 = getIntersection(G, leverLen, P_in, tieRodLen, 1);
+        const cand2 = getIntersection(G, leverLen, P_in, tieRodLen, -1);
+        let D_in = null;
+        if (cand1 && !cand2) D_in = cand1;
+        else if (!cand1 && cand2) D_in = cand2;
+        else if (cand1 && cand2) {
+            const d1 = distSq(cand1, D_in_target);
+            const d2 = distSq(cand2, D_in_target);
+            D_in = d1 < d2 ? cand1 : cand2;
+        }
+        if (!D_in) return null;
+
+        const angInGlobal = Math.atan2(D_in.x - G.x, -(D_in.y - G.y));
+        const leftOffset = -spread;
+        const rightOffset = spread;
+        const psi = turnLeft ? angInGlobal - leftOffset : angInGlobal - rightOffset;
+
+        const angOutGlobal = psi + (turnLeft ? rightOffset : leftOffset);
+        const D_out = { x: G.x + leverLen * Math.sin(angOutGlobal), y: G.y - leverLen * Math.cos(angOutGlobal) };
+        const originOut = turnLeft ? {x: tread/2, y:0} : {x: -tread/2, y:0};
+        const P_out_target = turnLeft ? knR_init : knL_init;
+        const sol1 = getIntersection(originOut, armLen, D_out, tieRodLen, 1);
+        const sol2 = getIntersection(originOut, armLen, D_out, tieRodLen, -1);
+        
+        let P_out = null;
+        if (sol1 && !sol2) P_out = sol1;
+        else if (!sol1 && sol2) P_out = sol2;
+        else if (sol1 && sol2) {
+            const d1 = distSq(sol1, P_out_target);
+            const d2 = distSq(sol2, P_out_target);
+            P_out = d1 < d2 ? sol1 : sol2;
+        }
+        if (!P_out) return null;
+
+        const vecOut = {x: P_out.x - originOut.x, y: P_out.y - originOut.y};
+        const currentAngle = Math.atan2(vecOut.x, -vecOut.y);
+        const neutralAngle = turnLeft ? -alpha : alpha;
+        const outputAngleDeg = toDeg(Math.abs(currentAngle - neutralAngle));
+        
+        return {
+            left:  turnLeft ? {kp:originIn,  kn:P_in,  lev:D_in}  : {kp:originOut, kn:P_out, lev:D_out},
+            right: turnLeft ? {kp:originOut, kn:P_out, lev:D_out} : {kp:originIn,  kn:P_in,  lev:D_in},
+            G, psi, outputAngleDeg, knL_init, knR_init, levL_init, levR_init
+        };
+    };
+
+    const App = () => {
+        // --- ステート管理 ---
+        const [wb, setWb] = useState(2800);
+        const [tread, setTread] = useState(1500);
+        const [alphaDeg, setAlphaDeg] = useState(15);
+        const [armLen, setArmLen] = useState(180);
+        const [leverLen, setLeverLen] = useState(180);
+        const [leverY, setLeverY] = useState(-300);
+        const [leverSpreadDeg, setLeverSpreadDeg] = useState(20);
+
+        // スライダーの設定のみ保持
+        const [sliderStepSettings, setSliderStepSettings] = useState({ ang: 0.1, len: 1 });
+
+        const [steerInput, setSteerInput] = useState(0);
+        const [dragTarget, setDragTarget] = useState(null); 
+        const [hoverTarget, setHoverTarget] = useState(null); 
+
+        const [viewState, setViewState] = useState({ zoom: 1.0, pan: { x: 0, y: 0 } });
+        const [isPanning, setIsPanning] = useState(false);
+        const [turningCenterMode, setTurningCenterMode] = useState(false);
+        
+        const lastMousePos = useRef({ x: 0, y: 0 });
+        const canvasContainerRef = useRef(null);
+        const canvasRef = useRef(null);
+        const chartRef = useRef(null);
+        const chartInstance = useRef(null);
+
+        // --- メモ化されたヘルパー関数 ---
+        const calculateGeometry = useCallback((angle, turnLeft) => 
+            computeLinkage(angle, turnLeft, { wb, tread, alphaDeg, armLen, leverLen, leverY, leverSpreadDeg }), 
+            [wb, tread, alphaDeg, armLen, leverLen, leverY, leverSpreadDeg]
+        );
+
+        const calculateICR = useCallback((steerL, steerR) => {
+            if (Math.abs(steerL) < 0.1 || Math.abs(steerR) < 0.1) return null;
+            const tL = Math.tan(toRad(steerL)), tR = Math.tan(toRad(steerR));
+            if (Math.abs(tL - tR) < 1e-5) return null; 
+            const x = -(tread * (tL + tR)) / (2 * (tL - tR));
+            const y = tL * (x + tread/2);
+            return { x, y };
+        }, [tread]);
+
+        const designSpecs = useMemo(() => {
+            const alpha = toRad(alphaDeg), spread = toRad(leverSpreadDeg), leverDir = -1;
+            const knL_init = { x: -tread/2 + armLen * Math.sin(alpha), y: -armLen * Math.cos(alpha) };
+            const levL_init = { x: leverLen * Math.sin(-spread), y: leverY + leverLen * Math.cos(-spread) * leverDir };
+            const tieRodLen = Math.sqrt((knL_init.x - levL_init.x)**2 + (knL_init.y - levL_init.y)**2);
+            const pivotDistance = 2 * leverLen * Math.sin(spread);
+            let totalAbsError = 0;
+            const params = { wb, tread, alphaDeg, armLen, leverLen, leverY, leverSpreadDeg };
+            for(let i = 1; i <= 40; i++) {
+                const ideal = toDeg(calcIdealOuter(toRad(i), wb, tread));
+                const res = computeLinkage(i, true, params);
+                if (res) totalAbsError += Math.abs(res.outputAngleDeg - ideal);
+            }
+            return { 
+                tieRodLen: tieRodLen.toFixed(2), 
+                pivotDistance: pivotDistance.toFixed(2), 
+                armLen: armLen.toFixed(2), 
+                leverLen: leverLen.toFixed(2), 
+                leverY: leverY.toFixed(2), 
+                alpha: alphaDeg.toFixed(3), 
+                spread: leverSpreadDeg.toFixed(3), 
+                totalAbsError: totalAbsError.toFixed(3) 
+            };
+        }, [wb, tread, alphaDeg, armLen, leverLen, leverY, leverSpreadDeg]);
+
+        const currentTurningRadius = useMemo(() => {
+            if (Math.abs(steerInput) < 0.5) return "∞";
+            const turnLeft = steerInput >= 0;
+            const geo = calculateGeometry(Math.abs(steerInput), turnLeft);
+            if (!geo) return "-";
+            const icr = calculateICR(turnLeft ? steerInput : -geo.outputAngleDeg, turnLeft ? geo.outputAngleDeg : steerInput);
+            if (!icr) return "∞";
+            return Math.sqrt(icr.x**2 + (icr.y + wb)**2).toFixed(0);
+        }, [steerInput, calculateGeometry, calculateICR, wb]);
+
+        // --- ビュー操作とスクロール防止 ---
+        useEffect(() => {
+            const container = canvasContainerRef.current;
+            if (!container) return;
+            const handleNativeWheel = (e) => {
+                e.preventDefault(); 
+                const rect = container.getBoundingClientRect();
+                const canvas = canvasRef.current;
+                if(!canvas) return;
+                const scaleX = canvas.width / rect.width;
+                const mx = (e.clientX - rect.left) * scaleX, my = (e.clientY - rect.top) * (canvas.height / rect.height);
+                const zoomSensitivity = 0.001;
+                const newZoom = Math.min(Math.max(viewState.zoom * (1 - e.deltaY * zoomSensitivity), 0.01), 20);
+                const w = canvas.width, h = canvas.height, baseScale = (w * 0.7) / tread;
+                const oldS = baseScale * viewState.zoom, newS = baseScale * newZoom;
+                const cx = w/2 + viewState.pan.x, cy = h/3 + viewState.pan.y;
+                const wx = (mx - cx) / oldS, wy = -(my - cy) / oldS;
+                setViewState({ zoom: newZoom, pan: { x: mx - w/2 - wx * newS, y: my - h/3 + wy * newS } });
+            };
+            container.addEventListener('wheel', handleNativeWheel, { passive: false });
+            return () => container.removeEventListener('wheel', handleNativeWheel);
+        }, [viewState.zoom, viewState.pan, tread]);
+
+        // --- 旋回中心自動追従 ---
+        useEffect(() => {
+            if (turningCenterMode && Math.abs(steerInput) > 1.5) {
+                const turnLeft = steerInput >= 0;
+                const geo = calculateGeometry(Math.abs(steerInput), turnLeft);
+                if (!geo) return;
+                const icr = calculateICR(turnLeft ? steerInput : -geo.outputAngleDeg, turnLeft ? geo.outputAngleDeg : steerInput);
+                if (icr) {
+                    const canvasW = canvasRef.current?.width || 800, canvasH = canvasRef.current?.height || 450;
+                    const padding = 1.3;
+                    const carBounds = { minX: -tread/2, maxX: tread/2, minY: -wb, maxY: 0 };
+                    const bounds = {
+                        minX: Math.min(carBounds.minX, icr.x), maxX: Math.max(carBounds.maxX, icr.x),
+                        minY: Math.min(carBounds.minY, icr.y), maxY: Math.max(carBounds.maxY, icr.y)
+                    };
+                    const w = bounds.maxX - bounds.minX, h = bounds.maxY - bounds.minY;
+                    const baseScale = (canvasW * 0.7) / tread;
+                    const targetScale = Math.min(canvasW, canvasH) / (Math.max(w, h, tread) * padding);
+                    const newZoom = Math.max(0.02, targetScale / baseScale);
+                    const finalScale = baseScale * newZoom;
+                    setViewState({
+                        zoom: newZoom,
+                        pan: { x: -((bounds.minX + bounds.maxX)/2) * finalScale, y: (canvasH/6) + ((bounds.minY + bounds.maxY)/2) * finalScale }
+                    });
+                }
+            } else if (turningCenterMode && Math.abs(steerInput) <= 1.5) {
+                setViewState({ zoom: 1.0, pan: { x: 0, y: 0 } });
+            }
+        }, [turningCenterMode, steerInput, wb, tread, calculateGeometry, calculateICR]);
+
+        // --- イベントハンドラ群 ---
+        const getMouseWorldPos = (e, canvas) => {
+            const rect = canvas.getBoundingClientRect();
+            const mx = (e.clientX - rect.left) * (canvas.width / rect.width), my = (e.clientY - rect.top) * (canvas.height / rect.height);
+            const scale = ((canvas.width * 0.7) / tread) * viewState.zoom;
+            return { wx: (mx - (canvas.width/2 + viewState.pan.x)) / scale, wy: -((my - (canvas.height/3 + viewState.pan.y)) / scale), mx, my };
+        };
+
+        const handleCanvasMouseDown = (e) => {
+            const canvas = canvasRef.current; if(!canvas) return;
+            const { mx, my, wx, wy } = getMouseWorldPos(e, canvas);
+            
+            const targets = [
+                { id: 'knL', p: { x: -tread/2 + armLen * Math.sin(toRad(alphaDeg)), y: -armLen * Math.cos(toRad(alphaDeg)) } },
+                { id: 'knR', p: { x: tread/2 - armLen * Math.sin(toRad(alphaDeg)), y: -armLen * Math.cos(toRad(alphaDeg)) } },
+                { id: 'G', p: { x: 0, y: leverY } },
+                { id: 'levL', p: { x: leverLen * Math.sin(-toRad(leverSpreadDeg)), y: leverY - leverLen * Math.cos(-toRad(leverSpreadDeg)) } },
+                { id: 'levR', p: { x: leverLen * Math.sin(toRad(leverSpreadDeg)), y: leverY - leverLen * Math.cos(toRad(leverSpreadDeg)) } }
+            ];
+            const baseScale = (canvas.width * 0.7) / tread;
+            const threshold = 18 / (baseScale * viewState.zoom);
+            let hit = targets.find(t => Math.sqrt((wx - t.p.x)**2 + (wy - t.p.y)**2) < threshold);
+            
+            if(hit) { 
+                e.preventDefault(); 
+                setDragTarget(hit.id); 
+            } else { 
+                setIsPanning(true); 
+                lastMousePos.current = { x: mx, y: my }; 
+            }
+        };
+
+        const handleCanvasMouseMove = (e) => {
+            const canvas = canvasRef.current; if(!canvas) return;
+            const { mx, my, wx, wy } = getMouseWorldPos(e, canvas);
+            
+            if(isPanning || dragTarget) e.preventDefault(); 
+            
+            if(isPanning) {
+                const dx = mx - lastMousePos.current.x;
+                const dy = my - lastMousePos.current.y;
+                setViewState(prev => ({ 
+                    ...prev, 
+                    pan: { x: prev.pan.x + dx, y: prev.pan.y + dy } 
+                }));
+                lastMousePos.current = { x: mx, y: my };
+                return;
+            }
+            
+            if(dragTarget) {
+                if(dragTarget.startsWith('kn')) {
+                    const dx = wx - (dragTarget === 'knL' ? -tread/2 : tread/2), dy = wy;
+                    setArmLen(parseFloat(Math.max(1, Math.min(Math.sqrt(dx*dx + dy*dy), 2000)).toFixed(2)));
+                    setAlphaDeg(parseFloat(Math.max(-180, Math.min(toDeg(Math.atan2(dragTarget==='knL'?dx:-dx, -dy)), 180)).toFixed(3)));
+                } else if(dragTarget === 'G') {
+                    setLeverY(parseFloat(Math.min(2000, Math.max(wy, -2000)).toFixed(2)));
+                } else if(dragTarget.startsWith('lev')) {
+                    const dx = wx, dy = wy - leverY;
+                    setLeverLen(parseFloat(Math.max(1, Math.min(Math.sqrt(dx*dx + dy*dy), 2000)).toFixed(2)));
+                    setLeverSpreadDeg(parseFloat(Math.max(0, Math.min(toDeg(Math.atan2(Math.abs(dx), -dy)), 180)).toFixed(3)));
+                }
+            }
+        };
+
+        const handleCanvasMouseUp = () => {
+            setDragTarget(null);
+            setIsPanning(false);
+        };
+
+        const resetView = () => {
+            setViewState({ zoom: 1.0, pan: { x: 0, y: 0 } });
+        };
+
+        // --- Canvas 描画ループ ---
+        useEffect(() => {
+            const canvas = canvasRef.current; if(!canvas) return;
+            const ctx = canvas.getContext('2d'), w = canvas.width, h = canvas.height;
+            ctx.clearRect(0, 0, w, h);
+            const turnLeft = steerInput >= 0;
+            const geo = calculateGeometry(Math.abs(steerInput), turnLeft);
+            const neutralGeo = computeLinkage(0, true, { wb, tread, alphaDeg, armLen, leverLen, leverY, leverSpreadDeg });
+            const baseScale = (w * 0.7) / tread, finalScale = baseScale * viewState.zoom;
+            const cx = w/2 + viewState.pan.x, cy = h/3 + viewState.pan.y;
+            const toScr = (p) => ({ x: cx + p.x * finalScale, y: cy - p.y * finalScale });
+
+            if (turningCenterMode && Math.abs(steerInput) > 1 && geo) {
+                const icr = calculateICR(turnLeft ? steerInput : -geo.outputAngleDeg, turnLeft ? geo.outputAngleDeg : steerInput);
+                if (icr) {
+                    const sICR = toScr(icr); ctx.strokeStyle = 'rgba(59, 130, 246, 0.4)'; ctx.lineWidth = 1;
+                    const sL = toScr(geo.left.kp), sR = toScr(geo.right.kp);
+                    ctx.beginPath(); ctx.moveTo(sL.x, sL.y); ctx.lineTo(sICR.x, sICR.y); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(sR.x, sR.y); ctx.lineTo(sICR.x, sICR.y); ctx.stroke();
+                    ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)'; ctx.beginPath();
+                    const lineY = toScr({x:0, y:-wb}).y;
+                    ctx.moveTo(0, lineY); ctx.lineTo(w, lineY); ctx.stroke();
+                    ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(sICR.x, sICR.y, 6, 0, 7); ctx.fill();
+                }
+            }
+            ctx.strokeStyle = '#cbd5e1'; ctx.setLineDash([5,5]); ctx.beginPath(); 
+            ctx.moveTo(toScr({x:-tread/2, y:0}).x, toScr({x:-tread/2, y:0}).y); 
+            ctx.lineTo(toScr({x:tread/2, y:0}).x, toScr({x:tread/2, y:0}).y); ctx.stroke(); ctx.setLineDash([]);
+            
+            if(!geo || !neutralGeo) return;
+            const drawLink = (p1, p2, color, width, dash=[]) => {
+                const s1 = toScr(p1), s2 = toScr(p2); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round'; ctx.setLineDash(dash);
+                ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke(); ctx.setLineDash([]);
+            };
+            const r = Math.max(2, Math.min(6 / Math.sqrt(viewState.zoom), 10));
+            drawLink(neutralGeo.left.kp, neutralGeo.left.kn, '#e2e8f0', 2, [4,4]); drawLink(neutralGeo.right.kp, neutralGeo.right.kn, '#e2e8f0', 2, [4,4]);
+            const ngS = toScr(neutralGeo.G), nlS = toScr(neutralGeo.left.lev), nrS = toScr(neutralGeo.right.lev);
+            ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(ngS.x, ngS.y); ctx.lineTo(nlS.x, nlS.y); ctx.lineTo(nrS.x, nrS.y); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+            
+            drawLink(geo.left.kp, geo.left.kn, '#3b82f6', 4); drawLink(geo.left.kn, geo.left.lev, '#10b981', 3); 
+            drawLink(geo.right.kp, geo.right.kn, '#3b82f6', 4); drawLink(geo.right.kn, geo.right.lev, '#10b981', 3); 
+            const gS = toScr(geo.G), dlS = toScr(geo.left.lev), drS = toScr(geo.right.lev);
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.2)'; ctx.strokeStyle = '#d97706'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(gS.x, gS.y); ctx.lineTo(dlS.x, dlS.y); ctx.lineTo(drS.x, drS.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+            
+            const drawTire = (center, angle) => {
+                const c = toScr(center); ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(-toRad(angle));
+                ctx.fillStyle = '#334155'; ctx.fillRect(-15, -30, 30, 60); ctx.strokeStyle = '#facc15'; ctx.beginPath(); ctx.moveTo(0,10); ctx.lineTo(0,-40); ctx.stroke(); ctx.restore();
+            };
+            drawTire(geo.left.kp, turnLeft ? steerInput : -geo.outputAngleDeg); 
+            drawTire(geo.right.kp, turnLeft ? geo.outputAngleDeg : steerInput);
+        }, [steerInput, viewState, turningCenterMode, wb, tread, alphaDeg, armLen, leverLen, leverSpreadDeg, leverY, calculateGeometry, calculateICR]);
+
+        // --- チャート更新 ---
+        useEffect(() => {
+            const ctx = chartRef.current?.getContext('2d'); if(!ctx) return;
+            const labels = [], idealD = [], actualD = [], errorD = [];
+            for(let i=1; i<=40; i++) {
+                labels.push(i); const ideal = toDeg(calcIdealOuter(toRad(i), wb, tread)); idealD.push(ideal);
+                const res = calculateGeometry(i, true); if(res) { actualD.push(res.outputAngleDeg); errorD.push(res.outputAngleDeg - ideal); }
+            }
+            if (chartInstance.current) chartInstance.current.destroy();
+            chartInstance.current = new Chart(ctx, {
+                type: 'line', data: { labels, datasets: [
+                    { label: '誤差 (deg)', data: errorD, borderColor: '#ef4444', yAxisID: 'y_error', borderWidth: 2, tension: 0.4 },
+                    { label: '実測外輪角', data: actualD, borderColor: '#3b82f6', yAxisID: 'y_angle', borderWidth: 1, borderDash: [5,5] },
+                    { label: '理想アッカーマン', data: idealD, borderColor: '#22c55e', yAxisID: 'y_angle', borderWidth: 1 }
+                ]},
+                options: { animation: false, responsive: true, maintainAspectRatio: false, scales: { 
+                    y_angle: { position: 'left', title: {display:true, text:'外輪角 (deg)'} },
+                    y_error: { position: 'right', title: {display:true, text:'誤差 (deg)'}, grid: {drawOnChartArea:false} }
+                }}
+            });
+        }, [wb, tread, calculateGeometry]);
+
+        return (
+            <div className="max-w-7xl mx-auto p-4 md:p-6 text-slate-800 select-none">
+                <header className="mb-6 border-b pb-4">
+                    <h1 className="text-3xl font-bold text-slate-900">Central Lever Ackermann Designer</h1>
+                    <p className="text-slate-500 text-sm">剛体ベルクランク（2点ピボット）方式によるアッカーマンリンク設計</p>
+                </header>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <div className="lg:col-span-4 space-y-6 bg-white p-5 rounded-xl shadow-sm border border-slate-200 h-fit">
+                        <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+                            <label className="block text-sm font-bold mb-2 text-slate-700">ステアリング角度</label>
+                            <input type="range" min="-45" max="45" step="1" value={steerInput} onChange={e => setSteerInput(Number(e.target.value))} className="w-full h-2 bg-slate-300 rounded-lg appearance-none cursor-pointer" />
+                            <div className="flex justify-between text-xs font-mono mt-1"><span>R -45°</span><span className="text-lg font-bold text-blue-600">{steerInput}°</span><span>L +45°</span></div>
+                        </div>
+
+                        <div className="space-y-4">
+                            <h3 className="text-sm font-bold border-b pb-1 text-slate-500">車体基本諸元</h3>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div><label className="text-xs text-slate-500">WB (mm)</label><input type="number" value={wb} onChange={e=>setWb(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm font-mono"/></div>
+                                <div><label className="text-xs text-slate-500">Tread (mm)</label><input type="number" value={tread} onChange={e=>setTread(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm font-mono"/></div>
+                            </div>
+                        </div>
+
+                        <div className="space-y-4">
+                            <h3 className="text-sm font-bold border-b pb-1 text-slate-500">ナックルアーム設定</h3>
+                            <div><div className="flex justify-between"><label className="text-xs font-semibold">長さ Lk (mm)</label><span className="text-xs font-mono">{armLen} mm</span></div><input type="range" min="10" max="1000" step={sliderStepSettings.len} value={armLen} onChange={e=>setArmLen(Number(e.target.value))} className="w-full"/></div>
+                            <div><div className="flex justify-between"><label className="text-xs font-semibold">取付角 α (°)</label><span className="text-xs font-mono">{alphaDeg}°</span></div><input type="range" min="-180" max="180" step={sliderStepSettings.ang} value={alphaDeg} onChange={e=>setAlphaDeg(Number(e.target.value))} className="w-full"/></div>
+                        </div>
+
+                        <div className="space-y-4 bg-amber-50 p-3 rounded border border-amber-100">
+                            <h3 className="text-sm font-bold border-b pb-1 text-amber-800">中央レバー設定</h3>
+                            <div><div className="flex justify-between"><label className="text-xs font-semibold">半径 Lc (mm)</label><span className="text-xs font-mono">{leverLen} mm</span></div><input type="range" min="10" max="1000" step={sliderStepSettings.len} value={leverLen} onChange={e=>setLeverLen(Number(e.target.value))} className="w-full accent-amber-600"/></div>
+                            <div><div className="flex justify-between"><label className="text-xs font-semibold">前後位置 Y (mm)</label><span className="text-xs font-mono">{leverY} mm</span></div><input type="range" min="-2000" max="2000" step={sliderStepSettings.len} value={leverY} onChange={e=>setLeverY(Number(e.target.value))} className="w-full accent-amber-600"/></div>
+                            <div><div className="flex justify-between"><label className="text-xs font-semibold">開き角 Spread (°)</label><span className="text-xs font-mono">{leverSpreadDeg}°</span></div><input type="range" min="0" max="180" step={sliderStepSettings.ang} value={leverSpreadDeg} onChange={e=>setLeverSpreadDeg(Number(e.target.value))} className="w-full accent-amber-600"/></div>
+                        </div>
+
+                        <div className="pt-2">
+                            {/* スライダー変化量設定エリアのみ保持 */}
+                            <div className="p-3 bg-blue-50 rounded-lg border border-blue-100">
+                                <h4 className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-2">スライダー設定 (変化量)</h4>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div><label className="text-[9px] text-blue-600 block mb-1">角度ステップ (°)</label><input type="number" step="0.01" value={sliderStepSettings.ang} onChange={e => setSliderStepSettings({...sliderStepSettings, ang: Number(e.target.value)})} className="opt-input border-blue-200" /></div>
+                                    <div><label className="text-[9px] text-blue-600 block mb-1">長さステップ (mm)</label><input type="number" step="0.01" value={sliderStepSettings.len} onChange={e => setSliderStepSettings({...sliderStepSettings, len: Number(e.target.value)})} className="opt-input border-blue-200" /></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="lg:col-span-8 flex flex-col gap-6">
+                        <div className="bg-white p-1 rounded-xl shadow-sm border border-slate-200">
+                            <div className="flex justify-between px-4 py-2 bg-slate-50 rounded-t-lg"><span className="text-xs font-bold text-slate-500">Top View (Interactive Editor)</span></div>
+                            <div ref={canvasContainerRef} className="canvas-container"
+                                style={{cursor: isPanning ? 'grabbing' : (dragTarget ? 'crosshair' : 'default')}}
+                                onMouseDown={handleCanvasMouseDown}
+                                onMouseMove={handleCanvasMouseMove}
+                                onMouseUp={handleCanvasMouseUp}
+                                onMouseLeave={handleCanvasMouseUp}
+                            >
+                                <div className="view-controls">
+                                    <button className={`control-btn ${turningCenterMode ? 'active' : ''}`} onClick={() => setTurningCenterMode(!turningCenterMode)}>旋回中心ビュー</button>
+                                    <button className="control-btn" onClick={resetView}>ビューリセット</button>
+                                </div>
+                                <div className="interactive-hint">図形ドラッグで編集 / 背景ドラッグで移動 / ホイールでズーム</div>
+                                <canvas ref={canvasRef} width={800} height={450} className="w-full h-full object-contain"></canvas>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 h-64 flex flex-col">
+                                <h3 className="text-sm font-bold text-slate-700 mb-2">アッカーマン誤差曲線</h3>
+                                <div className="flex-1 relative"><canvas ref={chartRef}></canvas></div>
+                            </div>
+                            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                                <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">設計データ出力</h3>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="spec-card bg-indigo-50 border-indigo-100 col-span-2">
+                                        <div className="spec-label text-indigo-700">旋回半径 (現在の切れ角)</div>
+                                        <div><span className="spec-value text-indigo-800">{currentTurningRadius}</span><span className="spec-unit">mm</span></div>
+                                    </div>
+                                    <div className="spec-card bg-red-50 border-red-100 col-span-2">
+                                        <div className="spec-label text-red-700">誤差の絶対値合計 (1-40°)</div>
+                                        <div><span className="spec-value text-red-800">{designSpecs.totalAbsError}</span><span className="spec-unit">deg</span></div>
+                                    </div>
+                                    <div className="spec-card bg-green-50 border-green-100"><div className="spec-label text-green-700">タイロッド長</div><span className="spec-value text-green-800">{designSpecs.tieRodLen}</span><span className="spec-unit">mm</span></div>
+                                    <div className="spec-card bg-amber-50 border-amber-100"><div className="spec-label text-amber-700">レバーピボット間隔</div><span className="spec-value text-amber-800">{designSpecs.pivotDistance}</span><span className="spec-unit">mm</span></div>
+                                    <div className="spec-card bg-blue-50 border-blue-100"><div className="spec-label text-blue-700">ナックルアーム長</div><span className="spec-value text-blue-800">{designSpecs.armLen}</span><span className="spec-unit">mm</span></div>
+                                    <div className="spec-card bg-amber-50 border-amber-100"><div className="spec-label text-amber-700">レバー半径 (Lc)</div><span className="spec-value text-amber-800">{designSpecs.leverLen}</span><span className="spec-unit">mm</span></div>
+                                </div>
+                                <div className="mt-4 pt-3 border-t border-slate-100 text-xs text-slate-400 font-mono text-center">
+                                    Alpha: {designSpecs.alpha}° / Spread: {designSpecs.spread}° / Y: {designSpecs.leverY} mm
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+
+</script>
+</body>
+</html>
