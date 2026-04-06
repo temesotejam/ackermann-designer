@@ -393,7 +393,10 @@
             
             const drawTire = (center, angle) => {
                 const c = toScr(center); ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(-toRad(angle));
-                ctx.fillStyle = '#334155'; ctx.fillRect(-15, -30, 30, 60); ctx.strokeStyle = '#facc15'; ctx.beginPath(); ctx.moveTo(0,10); ctx.lineTo(0,-40); ctx.stroke(); ctx.restore();
+                ctx.strokeStyle = '#facc15'; ctx.lineWidth = 3; ctx.beginPath();
+                ctx.moveTo(0, 25); ctx.lineTo(0, -25);
+                ctx.moveTo(-25, 0); ctx.lineTo(25, 0);
+                ctx.stroke(); ctx.restore();
             };
             drawTire(geo.left.kp, turnLeft ? steerInput : -geo.outputAngleDeg); 
             drawTire(geo.right.kp, turnLeft ? geo.outputAngleDeg : steerInput);
@@ -439,8 +442,8 @@
                         <div className="space-y-4">
                             <h3 className="text-sm font-bold border-b pb-1 text-slate-500">車体基本諸元</h3>
                             <div className="grid grid-cols-2 gap-4">
-                                <div><label className="text-xs text-slate-500">WB (mm)</label><input type="number" value={wb} onChange={e=>setWb(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm font-mono"/></div>
-                                <div><label className="text-xs text-slate-500">Tread (mm)</label><input type="number" value={tread} onChange={e=>setTread(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm font-mono"/></div>
+                                <div><label className="text-xs text-slate-500">回転支点距離 (mm)</label><input type="number" value={tread} onChange={e=>setTread(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm font-mono"/></div>
+                                <div><label className="text-xs text-slate-500">左右輪距離 (トレッド) (mm)</label><input type="number" value={wb} onChange={e=>setWb(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm font-mono"/></div>
                             </div>
                         </div>
 
