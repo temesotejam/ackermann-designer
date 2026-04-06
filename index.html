@@ -325,13 +325,13 @@
             if(dragTarget) {
                 if(dragTarget.startsWith('kn')) {
                     const dx = wx - (dragTarget === 'knL' ? -tread/2 : tread/2), dy = wy;
-                    setArmLen(parseFloat(Math.max(1, Math.min(Math.sqrt(dx*dx + dy*dy), 2000)).toFixed(2)));
+                    setArmLen(parseFloat(Math.max(1, Math.min(Math.sqrt(dx*dx + dy*dy), wb)).toFixed(2)));
                     setAlphaDeg(parseFloat(Math.max(-180, Math.min(toDeg(Math.atan2(dragTarget==='knL'?dx:-dx, -dy)), 180)).toFixed(3)));
                 } else if(dragTarget === 'G') {
-                    setLeverY(parseFloat(Math.min(2000, Math.max(wy, -2000)).toFixed(2)));
+                    setLeverY(parseFloat(Math.min(wb, Math.max(wy, -wb)).toFixed(2)));
                 } else if(dragTarget.startsWith('lev')) {
                     const dx = wx, dy = wy - leverY;
-                    setLeverLen(parseFloat(Math.max(1, Math.min(Math.sqrt(dx*dx + dy*dy), 2000)).toFixed(2)));
+                    setLeverLen(parseFloat(Math.max(1, Math.min(Math.sqrt(dx*dx + dy*dy), wb)).toFixed(2)));
                     setLeverSpreadDeg(parseFloat(Math.max(0, Math.min(toDeg(Math.atan2(Math.abs(dx), -dy)), 180)).toFixed(3)));
                 }
             }
@@ -446,14 +446,14 @@
 
                         <div className="space-y-4">
                             <h3 className="text-sm font-bold border-b pb-1 text-slate-500">ナックルアーム設定</h3>
-                            <div><div className="flex justify-between"><label className="text-xs font-semibold">長さ Lk (mm)</label><span className="text-xs font-mono">{armLen} mm</span></div><input type="range" min="10" max="1000" step={sliderStepSettings.len} value={armLen} onChange={e=>setArmLen(Number(e.target.value))} className="w-full"/></div>
+                            <div><div className="flex justify-between"><label className="text-xs font-semibold">長さ Lk (mm)</label><span className="text-xs font-mono">{armLen} mm</span></div><input type="range" min="10" max={wb} step={sliderStepSettings.len} value={armLen} onChange={e=>setArmLen(Number(e.target.value))} className="w-full"/></div>
                             <div><div className="flex justify-between"><label className="text-xs font-semibold">取付角 α (°)</label><span className="text-xs font-mono">{alphaDeg}°</span></div><input type="range" min="-180" max="180" step={sliderStepSettings.ang} value={alphaDeg} onChange={e=>setAlphaDeg(Number(e.target.value))} className="w-full"/></div>
                         </div>
 
                         <div className="space-y-4 bg-amber-50 p-3 rounded border border-amber-100">
                             <h3 className="text-sm font-bold border-b pb-1 text-amber-800">中央レバー設定</h3>
-                            <div><div className="flex justify-between"><label className="text-xs font-semibold">半径 Lc (mm)</label><span className="text-xs font-mono">{leverLen} mm</span></div><input type="range" min="10" max="1000" step={sliderStepSettings.len} value={leverLen} onChange={e=>setLeverLen(Number(e.target.value))} className="w-full accent-amber-600"/></div>
-                            <div><div className="flex justify-between"><label className="text-xs font-semibold">前後位置 Y (mm)</label><span className="text-xs font-mono">{leverY} mm</span></div><input type="range" min="-2000" max="2000" step={sliderStepSettings.len} value={leverY} onChange={e=>setLeverY(Number(e.target.value))} className="w-full accent-amber-600"/></div>
+                            <div><div className="flex justify-between"><label className="text-xs font-semibold">半径 Lc (mm)</label><span className="text-xs font-mono">{leverLen} mm</span></div><input type="range" min="10" max={wb} step={sliderStepSettings.len} value={leverLen} onChange={e=>setLeverLen(Number(e.target.value))} className="w-full accent-amber-600"/></div>
+                            <div><div className="flex justify-between"><label className="text-xs font-semibold">前後位置 Y (mm)</label><span className="text-xs font-mono">{leverY} mm</span></div><input type="range" min={-wb} max={wb} step={sliderStepSettings.len} value={leverY} onChange={e=>setLeverY(Number(e.target.value))} className="w-full accent-amber-600"/></div>
                             <div><div className="flex justify-between"><label className="text-xs font-semibold">開き角 Spread (°)</label><span className="text-xs font-mono">{leverSpreadDeg}°</span></div><input type="range" min="0" max="180" step={sliderStepSettings.ang} value={leverSpreadDeg} onChange={e=>setLeverSpreadDeg(Number(e.target.value))} className="w-full accent-amber-600"/></div>
                         </div>
 
