@@ -217,8 +217,19 @@
             if (!geo) return "-";
             const icr = calculateICR(turnLeft ? steerInput : -geo.outputAngleDeg, turnLeft ? geo.outputAngleDeg : steerInput);
             if (!icr) return "∞";
-            return Math.sqrt(icr.x**2 + (icr.y + wb)**2).toFixed(0);
-        }, [steerInput, calculateGeometry, calculateICR, wb]);
+
+            // 旋回半径の定義：
+            // 左右前輪支点から旋回中心 ICR までの距離をそれぞれ求め、
+            // そのうち長い方を表示する。
+            const radiusFromLeftPivot = Math.sqrt(
+                (icr.x + tread / 2) ** 2 + icr.y ** 2
+            );
+            const radiusFromRightPivot = Math.sqrt(
+                (icr.x - tread / 2) ** 2 + icr.y ** 2
+            );
+
+            return Math.max(radiusFromLeftPivot, radiusFromRightPivot).toFixed(0);
+        }, [steerInput, calculateGeometry, calculateICR, tread]);
 
         // --- ビュー操作とスクロール防止 ---
         useEffect(() => {
@@ -500,7 +511,7 @@
                                 <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">設計データ出力</h3>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="spec-card bg-indigo-50 border-indigo-100 col-span-2">
-                                        <div className="spec-label text-indigo-700">旋回半径 (現在の切れ角)</div>
+                                        <div className="spec-label text-indigo-700">旋回半径 (前輪支点→旋回中心の最大距離)</div>
                                         <div><span className="spec-value text-indigo-800">{currentTurningRadius}</span><span className="spec-unit">mm</span></div>
                                     </div>
                                     <div className="spec-card bg-red-50 border-red-100 col-span-2">
