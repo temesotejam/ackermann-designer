@@ -147,6 +147,7 @@
         // --- ステート管理 ---
         const [wb, setWb] = useState(2800);
         const [tread, setTread] = useState(1500);
+        const [trackWidth, setTrackWidth] = useState(1650);
         const [alphaDeg, setAlphaDeg] = useState(15);
         const [armLen, setArmLen] = useState(180);
         const [leverLen, setLeverLen] = useState(180);
@@ -170,11 +171,98 @@
         const chartRef = useRef(null);
         const chartInstance = useRef(null);
 
+        // --- トレッド幅設定範囲 ---
+        const trackWidthRange = useMemo(() => ({
+            min: Math.round(tread * 1.1),
+            max: Math.round(tread * 2.0)
+        }), [tread]);
+
+        useEffect(() => {
+            setTrackWidth(prev => Math.min(Math.max(prev, trackWidthRange.min), trackWidthRange.max));
+        }, [trackWidthRange.min, trackWidthRange.max]);
+
         // --- メモ化されたヘルパー関数 ---
         const calculateGeometry = useCallback((angle, turnLeft) => 
             computeLinkage(angle, turnLeft, { wb, tread, alphaDeg, armLen, leverLen, leverY, leverSpreadDeg }), 
             [wb, tread, alphaDeg, armLen, leverLen, leverY, leverSpreadDeg]
         );
+
+        // --- 中央レバー角入力用の変換 ---
+        // 既存の computeLinkage() は「タイヤ角入力」のまま残す。
+        // UI上では中央レバー角を入力し、その角度に最も近くなるタイヤ角へ変換してから既存計算に渡す。
+        const getLeverAngleFromInput = useCallback((signedInputAngleDeg) => {
+            if (Math.abs(signedInputAngleDeg) < 1e-6) return 0;
+            const turnLeft = signedInputAngleDeg >= 0;
+            const geo = calculateGeometry(Math.abs(signedInputAngleDeg), turnLeft);
+            if (!geo) return 0;
+            return toDeg(geo.psi);
+        }, [calculateGeometry]);
+
+        const leverAngleRange = useMemo(() => {
+            let leftMax = 0;
+            let rightMax = 0;
+
+            // タイヤ角が45°を超えない範囲で、到達できる中央レバー角を探索する。
+            for (let a = 0; a <= 45; a += 0.25) {
+                const geoL = calculateGeometry(a, true);
+                if (geoL && Math.max(a, geoL.outputAngleDeg) <= 45 + 1e-6) {
+                    leftMax = Math.max(leftMax, Math.abs(toDeg(geoL.psi)));
+                }
+
+                const geoR = calculateGeometry(a, false);
+                if (geoR && Math.max(a, geoR.outputAngleDeg) <= 45 + 1e-6) {
+                    rightMax = Math.max(rightMax, Math.abs(toDeg(geoR.psi)));
+                }
+            }
+
+            return { min: -rightMax, max: leftMax };
+        }, [calculateGeometry]);
+
+        const findInputAngleFromLever = useCallback((targetLeverAngleDeg) => {
+            if (Math.abs(targetLeverAngleDeg) < 1e-6) return 0;
+
+            const turnLeft = targetLeverAngleDeg >= 0;
+            const targetAbs = Math.abs(targetLeverAngleDeg);
+
+            let bestAngle = 0;
+            let bestError = Infinity;
+
+            const evaluate = (a) => {
+                const geo = calculateGeometry(a, turnLeft);
+                if (!geo) return;
+
+                // 内輪側入力角 a と外輪側出力角のどちらも45°以下に制限する。
+                if (Math.max(a, geo.outputAngleDeg) > 45 + 1e-6) return;
+
+                const leverAbs = Math.abs(toDeg(geo.psi));
+                const error = Math.abs(leverAbs - targetAbs);
+
+                if (error < bestError) {
+                    bestError = error;
+                    bestAngle = a;
+                }
+            };
+
+            // 粗探索
+            for (let a = 0; a <= 45; a += 0.25) evaluate(a);
+
+            // 最良点の近傍だけ細かく探索
+            const start = Math.max(0, bestAngle - 0.5);
+            const end = Math.min(45, bestAngle + 0.5);
+            for (let a = start; a <= end; a += 0.01) evaluate(a);
+
+            return (turnLeft ? 1 : -1) * bestAngle;
+        }, [calculateGeometry]);
+
+        const currentLeverAngle = useMemo(() => 
+            getLeverAngleFromInput(steerInput), 
+            [steerInput, getLeverAngleFromInput]
+        );
+
+        const handleLeverAngleChange = useCallback((e) => {
+            const targetLeverAngle = Number(e.target.value);
+            setSteerInput(findInputAngleFromLever(targetLeverAngle));
+        }, [findInputAngleFromLever]);
 
         const calculateICR = useCallback((steerL, steerR) => {
             if (Math.abs(steerL) < 0.1 || Math.abs(steerR) < 0.1) return null;
@@ -219,17 +307,21 @@
             if (!icr) return "∞";
 
             // 旋回半径の定義：
-            // 左右前輪支点から旋回中心 ICR までの距離をそれぞれ求め、
-            // そのうち長い方を表示する。
+            // 1. 左右前輪の回転支点から旋回中心 ICR までの距離をそれぞれ求める。
+            // 2. そのうち長い方を、回転支点基準の前輪旋回半径とする。
+            // 3. タイヤ位置を考慮するため、
+            //    (トレッド幅 - 回転支点距離) / 2 を加える。
             const radiusFromLeftPivot = Math.sqrt(
                 (icr.x + tread / 2) ** 2 + icr.y ** 2
             );
             const radiusFromRightPivot = Math.sqrt(
                 (icr.x - tread / 2) ** 2 + icr.y ** 2
             );
+            const pivotBasedRadius = Math.max(radiusFromLeftPivot, radiusFromRightPivot);
+            const tireOffset = (trackWidth - tread) / 2;
 
-            return Math.max(radiusFromLeftPivot, radiusFromRightPivot).toFixed(0);
-        }, [steerInput, calculateGeometry, calculateICR, tread]);
+            return (pivotBasedRadius + tireOffset).toFixed(0);
+        }, [steerInput, calculateGeometry, calculateICR, tread, trackWidth]);
 
         // --- ビュー操作とスクロール防止 ---
         useEffect(() => {
@@ -445,9 +537,33 @@
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                     <div className="lg:col-span-4 space-y-6 bg-white p-5 rounded-xl shadow-sm border border-slate-200 h-fit">
                         <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                            <label className="block text-sm font-bold mb-2 text-slate-700">ステアリング角度</label>
-                            <input type="range" min="-45" max="45" step="1" value={steerInput} onChange={e => setSteerInput(Number(e.target.value))} className="w-full h-2 bg-slate-300 rounded-lg appearance-none cursor-pointer" />
-                            <div className="flex justify-between text-xs font-mono mt-1"><span>R -45°</span><span className="text-lg font-bold text-blue-600">{steerInput}°</span><span>L +45°</span></div>
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                                <label className="block text-sm font-bold text-slate-700">中央レバー角度</label>
+                                <button
+                                    type="button"
+                                    onClick={() => setSteerInput(0)}
+                                    className="px-3 py-1 text-xs font-bold rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-100 hover:text-blue-600 transition-colors"
+                                >
+                                    0°に戻す
+                                </button>
+                            </div>
+                            <input
+                                type="range"
+                                min={leverAngleRange.min.toFixed(2)}
+                                max={leverAngleRange.max.toFixed(2)}
+                                step={sliderStepSettings.ang}
+                                value={currentLeverAngle}
+                                onChange={handleLeverAngleChange}
+                                className="w-full h-2 bg-slate-300 rounded-lg appearance-none cursor-pointer"
+                            />
+                            <div className="flex justify-between text-xs font-mono mt-1">
+                                <span>R {leverAngleRange.min.toFixed(1)}°</span>
+                                <span className="text-lg font-bold text-blue-600">{currentLeverAngle.toFixed(2)}°</span>
+                                <span>L +{leverAngleRange.max.toFixed(1)}°</span>
+                            </div>
+                            <div className="mt-1 text-[10px] text-slate-400 text-center">
+                                タイヤ角が±45°を超えない範囲で、中央レバー角を操作します
+                            </div>
                         </div>
 
                         <div className="space-y-4">
@@ -455,6 +571,25 @@
                             <div className="grid grid-cols-2 gap-4">
                                 <div><label className="text-xs text-slate-500">回転支点距離 (mm)</label><input type="number" value={tread} onChange={e=>setTread(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm font-mono"/></div>
                                 <div><label className="text-xs text-slate-500">前後輪距離 (mm)</label><input type="number" value={wb} onChange={e=>setWb(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm font-mono"/></div>
+                                <div className="col-span-2">
+                                    <div className="flex justify-between">
+                                        <label className="text-xs text-slate-500">トレッド幅 (mm)</label>
+                                        <span className="text-xs font-mono text-slate-600">{trackWidth.toFixed(0)} mm</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min={trackWidthRange.min}
+                                        max={trackWidthRange.max}
+                                        step={sliderStepSettings.len}
+                                        value={trackWidth}
+                                        onChange={e=>setTrackWidth(Number(e.target.value))}
+                                        className="w-full"
+                                    />
+                                    <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                                        <span>min {trackWidthRange.min} mm</span>
+                                        <span>max {trackWidthRange.max} mm</span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -511,7 +646,7 @@
                                 <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">設計データ出力</h3>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="spec-card bg-indigo-50 border-indigo-100 col-span-2">
-                                        <div className="spec-label text-indigo-700">旋回半径 (前輪支点→旋回中心の最大距離)</div>
+                                        <div className="spec-label text-indigo-700">旋回半径 (タイヤ位置考慮)</div>
                                         <div><span className="spec-value text-indigo-800">{currentTurningRadius}</span><span className="spec-unit">mm</span></div>
                                     </div>
                                     <div className="spec-card bg-red-50 border-red-100 col-span-2">
